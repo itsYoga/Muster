@@ -111,7 +111,7 @@ class RunConfig:
     inject: bool = False
     target: AgentRole = "responder"  # which single agent is hijacked, if inject
     stealth: float = 0.0  # 0.0 = blatant cover story, 1.0 = mimics benign rationale
-    backend: str = "rule"  # "rule" (deterministic) or "llm" (Claude)
+    backend: str = "rule"  # "rule" (deterministic) or "llm" (Claude / Gemini)
     defense: bool = True  # enable challenge/freeze in the graph
     threshold: float = 3.0  # deviation-score alert threshold (calibrate in practice)
     vote: bool = False  # require peer majority before freezing (N>=3)

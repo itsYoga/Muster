@@ -23,7 +23,9 @@ threat model and architecture.
 ## Conventions
 
 - Default backend is `rule` (deterministic, offline). `llm` backend needs
-  `ANTHROPIC_API_KEY`; keep both behind the same interface in `teammate_model.py`.
+  `ANTHROPIC_API_KEY` (Claude) or `GEMINI_API_KEY` (Gemini); provider selection
+  lives in `llm.try_build_client`. Keep rule/llm behind the same interface in
+  `teammate_model.py`.
 - Never hardcode detection thresholds — calibrate from normal-trajectory quantiles
   (`defense.py`).
 - Detectors implement the shared `fit`/score interface in `baselines.py`; new

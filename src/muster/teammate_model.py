@@ -9,9 +9,9 @@ Two backends implement the same interface:
 
 * :class:`HeuristicTeammateModel` -- a closed-form policy prior. Zero-training,
   deterministic, reproducible; the default used for datasets and evaluation.
-* :class:`LLMTeammateModel` -- prompts Claude with the peer's trajectory and
-  asks it to predict the next action as a distribution. Wired through the
-  Anthropic SDK; used when ``backend == "llm"``.
+* :class:`LLMTeammateModel` -- prompts an LLM (Claude or Gemini, see
+  :mod:`muster.llm`) with the peer's trajectory and asks it to predict the next
+  action as a distribution; used when ``backend == "llm"``.
 
 Both return a probability distribution over the peer's action space, which the
 scorer turns into a surprisal.

@@ -1,64 +1,47 @@
-"""Optional Claude backend (agents + teammate model).
+"""Optional LLM backend (agents + teammate model).
 
 The whole pipeline runs deterministically with no API key via the ``rule``
-backend. This wrapper is used only when ``backend == "llm"``. It uses the
-Anthropic SDK with structured outputs so agent decisions and teammate-model
-predictions come back as validated JSON.
+backend. This wrapper is used only when ``backend == "llm"``. Two providers
+implement the same structured-output interface:
 
-Model default: ``claude-opus-4-8``. Credentials resolve from the environment
-(``ANTHROPIC_API_KEY`` or an ``ant auth login`` profile) the same way the SDK
-does; nothing is hardcoded here.
+* Anthropic Claude (default ``claude-opus-4-8``), via the ``anthropic`` SDK.
+  Credentials resolve from ``ANTHROPIC_API_KEY`` or an ``ant auth login``
+  profile, the same way the SDK does.
+* Google Gemini (default ``gemini-2.5-flash``), via the REST API with no extra
+  dependency. Credentials resolve from ``GEMINI_API_KEY`` or ``GOOGLE_API_KEY``.
+
+Provider selection in :func:`try_build_client`: ``MUSTER_LLM_PROVIDER``
+(``anthropic`` | ``gemini``) if set, otherwise whichever provider has
+credentials available, preferring Anthropic when both do.
 """
 
 from __future__ import annotations
 
+import json
+import os
 from typing import Any, Optional
 
 from .state import Email, Step
 
 
 class LLMUnavailable(RuntimeError):
-    """Raised when the Anthropic SDK or credentials are not available."""
+    """Raised when an LLM SDK or its credentials are not available."""
 
 
-class ClaudeClient:
-    """Thin wrapper over ``anthropic`` with structured-output helpers."""
-
-    def __init__(self, model: str = "claude-opus-4-8", max_tokens: int = 1024) -> None:
-        try:
-            import anthropic
-        except ImportError as exc:  # pragma: no cover - import guard
-            raise LLMUnavailable("anthropic SDK not installed") from exc
-        try:
-            self._client = anthropic.Anthropic()
-        except Exception as exc:  # pragma: no cover - credential guard
-            raise LLMUnavailable(f"could not construct Anthropic client: {exc}") from exc
-        self._model = model
-        self._max_tokens = max_tokens
-
-    # --- agent decision --------------------------------------------------------
+class _StructuredClient:
+    """Shared prompt construction; providers implement :meth:`decide`."""
 
     def decide(self, system: str, user: str, schema: dict[str, Any]) -> dict[str, Any]:
         """Return a JSON object validated against ``schema``."""
 
-        resp = self._client.messages.create(
-            model=self._model,
-            max_tokens=self._max_tokens,
-            system=system,
-            messages=[{"role": "user", "content": user}],
-            output_config={"format": {"type": "json_schema", "schema": schema}},
-        )
-        import json
-
-        text = next(b.text for b in resp.content if b.type == "text")
-        return json.loads(text)
+        raise NotImplementedError
 
     # --- teammate-model prediction --------------------------------------------
 
     def predict_distribution(
         self, peer: str, trajectory: list[Step], email: Email, labels: list[str]
     ) -> dict[str, float]:
-        """Ask Claude to predict a peer's next action as a probability map."""
+        """Ask the model to predict a peer's next action as a probability map."""
 
         history = "\n".join(
             f"- {s.agent}: observed {s.observation!r} -> chose {s.action!r} "
@@ -88,10 +71,109 @@ class ClaudeClient:
         return self.decide(system, user, schema)
 
 
-def try_build_client(model: str = "claude-opus-4-8") -> Optional[ClaudeClient]:
-    """Best-effort construction; returns ``None`` if the backend is unavailable."""
+class ClaudeClient(_StructuredClient):
+    """Thin wrapper over ``anthropic`` with structured-output helpers."""
 
+    def __init__(self, model: str = "claude-opus-4-8", max_tokens: int = 1024) -> None:
+        try:
+            import anthropic
+        except ImportError as exc:  # pragma: no cover - import guard
+            raise LLMUnavailable("anthropic SDK not installed") from exc
+        try:
+            self._client = anthropic.Anthropic()
+        except Exception as exc:  # pragma: no cover - credential guard
+            raise LLMUnavailable(f"could not construct Anthropic client: {exc}") from exc
+        self._model = model
+        self._max_tokens = max_tokens
+
+    def decide(self, system: str, user: str, schema: dict[str, Any]) -> dict[str, Any]:
+        resp = self._client.messages.create(
+            model=self._model,
+            max_tokens=self._max_tokens,
+            system=system,
+            messages=[{"role": "user", "content": user}],
+            output_config={"format": {"type": "json_schema", "schema": schema}},
+        )
+        text = next(b.text for b in resp.content if b.type == "text")
+        return json.loads(text)
+
+
+class GeminiClient(_StructuredClient):
+    """Gemini REST backend; stdlib-only, uses structured JSON output."""
+
+    _ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+
+    def __init__(self, model: str = "gemini-2.5-flash") -> None:
+        key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+        if not key:
+            raise LLMUnavailable("GEMINI_API_KEY / GOOGLE_API_KEY not set")
+        self._key = key
+        self._model = model
+
+    def decide(self, system: str, user: str, schema: dict[str, Any]) -> dict[str, Any]:
+        body = {
+            "system_instruction": {"parts": [{"text": system}]},
+            "contents": [{"role": "user", "parts": [{"text": user}]}],
+            "generationConfig": {
+                "responseMimeType": "application/json",
+                "responseJsonSchema": schema,
+            },
+        }
+        try:
+            text = self._post(body)
+        except _GeminiHTTPError as exc:
+            if exc.status != 400:
+                raise
+            # Older models reject responseJsonSchema; fall back to JSON mode
+            # with the schema spelled out in the prompt.
+            body["generationConfig"].pop("responseJsonSchema")
+            body["contents"][0]["parts"][0]["text"] = (
+                f"{user}\n\nRespond with JSON matching this schema exactly:\n"
+                f"{json.dumps(schema)}"
+            )
+            text = self._post(body)
+        return json.loads(text)
+
+    def _post(self, body: dict[str, Any]) -> str:
+        import urllib.error
+        import urllib.request
+
+        req = urllib.request.Request(
+            self._ENDPOINT.format(model=self._model),
+            data=json.dumps(body).encode(),
+            headers={"x-goog-api-key": self._key, "Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                payload = json.load(resp)
+        except urllib.error.HTTPError as exc:
+            raise _GeminiHTTPError(exc.code, exc.read().decode(errors="replace")) from exc
+        try:
+            return payload["candidates"][0]["content"]["parts"][0]["text"]
+        except (KeyError, IndexError) as exc:
+            raise RuntimeError(f"unexpected Gemini response: {payload}") from exc
+
+
+class _GeminiHTTPError(RuntimeError):
+    def __init__(self, status: int, detail: str) -> None:
+        super().__init__(f"Gemini API error {status}: {detail}")
+        self.status = status
+
+
+def try_build_client(model: Optional[str] = None) -> Optional[_StructuredClient]:
+    """Best-effort construction; returns ``None`` if no backend is available."""
+
+    provider = os.environ.get("MUSTER_LLM_PROVIDER", "").lower()
+    if not provider:
+        if os.environ.get("ANTHROPIC_API_KEY"):
+            provider = "anthropic"
+        elif os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"):
+            provider = "gemini"
+        else:
+            provider = "anthropic"  # SDK may still find an auth profile
     try:
-        return ClaudeClient(model=model)
+        if provider == "gemini":
+            return GeminiClient(**({"model": model} if model else {}))
+        return ClaudeClient(**({"model": model} if model else {}))
     except LLMUnavailable:
         return None

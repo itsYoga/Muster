@@ -66,8 +66,9 @@ python scripts/plot_stealth_curve.py   # optional, needs matplotlib
 ```
 
 Everything runs offline with the deterministic `rule` backend. Pass
-`--backend llm` (with `ANTHROPIC_API_KEY` set) to use Claude as both the agent
-brains and the teammate model.
+`--backend llm` to use an LLM as both the agent brains and the teammate model —
+set `ANTHROPIC_API_KEY` for Claude or `GEMINI_API_KEY` for Gemini (auto-detected;
+`MUSTER_LLM_PROVIDER=anthropic|gemini` to force one).
 
 Example of a caught hijack:
 
