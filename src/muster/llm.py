@@ -28,6 +28,27 @@ class LLMUnavailable(RuntimeError):
     """Raised when an LLM SDK or its credentials are not available."""
 
 
+def _load_dotenv() -> None:
+    """Load ``KEY=value`` lines from a ``.env`` at the repo root (gitignored).
+
+    Real environment variables take precedence; malformed lines are skipped.
+    """
+
+    import pathlib
+
+    path = pathlib.Path(__file__).resolve().parents[2] / ".env"
+    if not path.is_file():
+        return
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key, value = key.strip(), value.strip().strip("'\"")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
 class _StructuredClient:
     """Shared prompt construction; providers implement :meth:`decide`."""
 
@@ -163,6 +184,7 @@ class _GeminiHTTPError(RuntimeError):
 def try_build_client(model: Optional[str] = None) -> Optional[_StructuredClient]:
     """Best-effort construction; returns ``None`` if no backend is available."""
 
+    _load_dotenv()
     provider = os.environ.get("MUSTER_LLM_PROVIDER", "").lower()
     if not provider:
         if os.environ.get("ANTHROPIC_API_KEY"):
