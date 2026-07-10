@@ -7,12 +7,14 @@ implement the same structured-output interface:
 * Anthropic Claude (default ``claude-opus-4-8``), via the ``anthropic`` SDK.
   Credentials resolve from ``ANTHROPIC_API_KEY`` or an ``ant auth login``
   profile, the same way the SDK does.
-* Google Gemini (default ``gemini-2.5-flash``), via the REST API with no extra
-  dependency. Credentials resolve from ``GEMINI_API_KEY`` or ``GOOGLE_API_KEY``.
+* Google Gemini (default ``gemini-flash-latest``), via the REST API with no
+  extra dependency. Credentials resolve from ``GEMINI_API_KEY`` or
+  ``GOOGLE_API_KEY``.
 
 Provider selection in :func:`try_build_client`: ``MUSTER_LLM_PROVIDER``
 (``anthropic`` | ``gemini``) if set, otherwise whichever provider has
-credentials available, preferring Anthropic when both do.
+credentials available, preferring Anthropic when both do. ``MUSTER_LLM_MODEL``
+overrides the provider's default model name.
 """
 
 from __future__ import annotations
@@ -124,7 +126,7 @@ class GeminiClient(_StructuredClient):
 
     _ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
-    def __init__(self, model: str = "gemini-2.5-flash") -> None:
+    def __init__(self, model: str = "gemini-flash-latest") -> None:
         key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
         if not key:
             raise LLMUnavailable("GEMINI_API_KEY / GOOGLE_API_KEY not set")
@@ -155,20 +157,25 @@ class GeminiClient(_StructuredClient):
             text = self._post(body)
         return json.loads(text)
 
-    def _post(self, body: dict[str, Any]) -> str:
+    def _post(self, body: dict[str, Any], retries: int = 4) -> str:
+        import time
         import urllib.error
         import urllib.request
 
-        req = urllib.request.Request(
-            self._ENDPOINT.format(model=self._model),
-            data=json.dumps(body).encode(),
-            headers={"x-goog-api-key": self._key, "Content-Type": "application/json"},
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=120) as resp:
-                payload = json.load(resp)
-        except urllib.error.HTTPError as exc:
-            raise _GeminiHTTPError(exc.code, exc.read().decode(errors="replace")) from exc
+        data = json.dumps(body).encode()
+        headers = {"x-goog-api-key": self._key, "Content-Type": "application/json"}
+        url = self._ENDPOINT.format(model=self._model)
+        for attempt in range(retries + 1):
+            req = urllib.request.Request(url, data=data, headers=headers)
+            try:
+                with urllib.request.urlopen(req, timeout=120) as resp:
+                    payload = json.load(resp)
+                break
+            except urllib.error.HTTPError as exc:
+                if exc.code in (429, 500, 503) and attempt < retries:
+                    time.sleep(2.0 * 2**attempt)
+                    continue
+                raise _GeminiHTTPError(exc.code, exc.read().decode(errors="replace")) from exc
         try:
             return payload["candidates"][0]["content"]["parts"][0]["text"]
         except (KeyError, IndexError) as exc:
@@ -185,6 +192,7 @@ def try_build_client(model: Optional[str] = None) -> Optional[_StructuredClient]
     """Best-effort construction; returns ``None`` if no backend is available."""
 
     _load_dotenv()
+    model = model or os.environ.get("MUSTER_LLM_MODEL") or None
     provider = os.environ.get("MUSTER_LLM_PROVIDER", "").lower()
     if not provider:
         if os.environ.get("ANTHROPIC_API_KEY"):
