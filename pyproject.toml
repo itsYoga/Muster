@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "muster"
+version = "0.1.0"
+description = "Detecting prompt-injection-hijacked teammates in a multi-agent SOC via in-context peer behavior modeling."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "langgraph>=1.0",
+    "anthropic>=0.116",
+    "scikit-learn>=1.3",
+    "numpy>=1.24",
+]
+
+[project.optional-dependencies]
+plot = ["matplotlib>=3.7"]
+dev = ["pytest>=7.4"]
+
+[project.scripts]
+muster-scenario = "muster.cli:scenario_main"
+muster-dataset = "muster.cli:dataset_main"
+muster-evaluate = "muster.cli:evaluate_main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

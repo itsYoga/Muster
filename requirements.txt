@@ -1,0 +1,12 @@
+# Core orchestration
+langgraph>=1.0
+
+# Anthropic Claude (optional LLM backend for agents + teammate model)
+anthropic>=0.116
+
+# Detection baselines / numerics
+scikit-learn>=1.3
+numpy>=1.24
+
+# Plotting (stealth-vs-detection curve). Optional; scripts degrade gracefully.
+matplotlib>=3.7
